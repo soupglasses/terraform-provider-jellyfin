@@ -3,18 +3,21 @@
 page_title: "jellyfin_plugin_configuration Resource - jellyfin"
 subcategory: ""
 description: |-
-  Manages plugin configuration in Jellyfin. Configuration is passed as a JSON string, allowing universal support for any plugin settings including SSO-Auth.
+  Manages selected plugin configuration fields in Jellyfin using a JSON object. Object keys merge recursively with the current server configuration; omitted keys are preserved. Arrays, scalars and explicit null replace their entire values. Null is a value, not a deletion. Empty objects require an object but own no child keys. Removing a key releases ownership without resetting its remote value.
+  Import initially reads all fields. Apply a narrower configuration to release unwanted fields without changing them. Destroy leaves the configuration in place. Use one resource per plugin. Jellyfin has no conditional configuration writes, so changes made by another writer between the read and write can be overwritten.
 ---
 
 # jellyfin_plugin_configuration (Resource)
 
-Manages plugin configuration in Jellyfin. Configuration is passed as a JSON string, allowing universal support for any plugin settings including SSO-Auth.
+Manages selected plugin configuration fields in Jellyfin using a JSON object. Object keys merge recursively with the current server configuration; omitted keys are preserved. Arrays, scalars and explicit null replace their entire values. Null is a value, not a deletion. Empty objects require an object but own no child keys. Removing a key releases ownership without resetting its remote value.
+
+Import initially reads all fields. Apply a narrower configuration to release unwanted fields without changing them. Destroy leaves the configuration in place. Use one resource per plugin. Jellyfin has no conditional configuration writes, so changes made by another writer between the read and write can be overwritten.
 
 ## Example Usage
 
 ```terraform
-# Configure any plugin using raw JSON. Jellyfin replaces the plugin's whole
-# configuration with it, so a key left out takes the plugin's default.
+# Configure owned plugin settings using JSON. Undeclared object keys are
+# preserved; arrays are replaced whole. Omission releases ownership.
 # This example configures the SSO-Auth plugin, whose OIDC and SAML providers
 # are maps keyed by provider name.
 resource "jellyfin_plugin_repository" "sso" {
@@ -63,11 +66,12 @@ resource "jellyfin_plugin_configuration" "sso_auth" {
 
 ### Required
 
-- `configuration_json` (String) The plugin configuration as a JSON string. For SSO-Auth, this would include SAML/OIDC configuration. This allows universal configuration of any plugin. Jellyfin replaces the plugin's whole configuration with it, so a key it leaves out takes the plugin's default, and only the keys it names are compared with what the server holds: a key added outside Terraform, such as an SSO provider added on the plugin's page, plans no change, and the next update removes it. An import reads every key.
+- `configuration_json` (String, Sensitive) A JSON object containing only the plugin settings to manage. Unspecified object keys are preserved; arrays are replaced whole. Sensitive values remain in Terraform state.
 - `plugin_id` (String) The plugin ID (GUID), with or without dashes. Both spellings name the same plugin, so switching between them plans no change.
 
 ### Read-Only
 
+- `configuration_keys` (String) Owned object keys, derived from configuration_json. Nested objects retain their structure; arrays, scalars and null are represented by null. This read-only ownership record survives remote field removal and type changes.
 - `id` (String) The plugin configuration resource identifier.
 
 ## Import

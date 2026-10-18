@@ -28,6 +28,9 @@ jobs:
           cache: true
       - run: go mod download
       - run: go build -v .
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_wrapper: false
       # Unit tests of every package. The acceptance steps below run only the
       # packages that talk to Jellyfin, and the import tool's step only its
       # TestAcc tests.

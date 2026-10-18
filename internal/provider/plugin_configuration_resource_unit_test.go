@@ -101,7 +101,7 @@ func TestUnitPluginIDPlan(t *testing.T) {
 // configuration that names some keys reads back as itself.
 func TestUnitPluginConfigurationReadsBackTheKeysItManages(t *testing.T) {
 	ctx := t.Context()
-	const defaults = `{"Server": "https://musicbrainz.org", "RateLimit": 1, "ReplaceArtistName": false}`
+	const defaults = `{"Server": "https://musicbrainz.org", "RateLimit": 7, "ReplaceArtistName": false}`
 	stored := defaults
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -137,6 +137,13 @@ func TestUnitPluginConfigurationReadsBackTheKeysItManages(t *testing.T) {
 	if created.Diagnostics.HasError() {
 		t.Fatal(created.Diagnostics)
 	}
+	var actual map[string]any
+	if err := json.Unmarshal([]byte(stored), &actual); err != nil {
+		t.Fatal(err)
+	}
+	if actual["RateLimit"] != float64(7) {
+		t.Fatalf("unowned setting changed: %s", stored)
+	}
 	read := resource.ReadResponse{State: created.State}
 	r.Read(ctx, resource.ReadRequest{State: created.State}, &read)
 	if read.Diagnostics.HasError() {
@@ -159,5 +166,88 @@ func TestUnitPluginConfigurationReadsBackTheKeysItManages(t *testing.T) {
 	r.Read(ctx, resource.ReadRequest{State: imported}, &read)
 	if d := read.State.Get(ctx, &got); d.HasError() || !strings.Contains(got.Configuration.ValueString(), "RateLimit") {
 		t.Errorf("imported configuration_json = %s (%v), want every served key", got.Configuration.ValueString(), d)
+	}
+}
+
+func TestUnitPluginConfigurationFailedReadDoesNotWrite(t *testing.T) {
+	ctx := t.Context()
+	writes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			writes++
+		}
+		http.Error(w, "secret-response-body", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	r := &PluginConfigurationResource{client: client.NewClient(server.URL, "k")}
+	s := schemaOf(r)
+	null := tftypes.NewValue(s.Type().TerraformType(ctx), nil)
+	plan := tfsdk.Plan{Schema: s, Raw: null}
+	if diagnostics := plan.Set(ctx, &PluginConfigurationResourceModel{ID: types.StringUnknown(), PluginID: types.StringValue("mb"), Configuration: jsontypes.NewNormalizedValue(`{"Host":"secret-value"}`)}); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	response := resource.CreateResponse{State: tfsdk.State{Schema: s, Raw: null}}
+	r.Create(ctx, resource.CreateRequest{Plan: plan}, &response)
+	if !response.Diagnostics.HasError() || writes != 0 {
+		t.Fatalf("diagnostics %v, writes %d", response.Diagnostics, writes)
+	}
+	for _, diagnostic := range response.Diagnostics {
+		if strings.Contains(diagnostic.Detail(), "secret-") {
+			t.Fatal("configuration error leaked a secret")
+		}
+	}
+	if !s.Attributes["configuration_json"].IsSensitive() {
+		t.Fatal("configuration_json must be sensitive")
+	}
+}
+
+// Upjet's Framework client forwards ordinary state without Terraform private
+// data. Repeated observations must retain ownership through that interface.
+func TestUnitPluginConfigurationReadWithoutPrivateState(t *testing.T) {
+	ctx := t.Context()
+	remote := `{"section":{"owned":1,"runtime":true},"atomic":false}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet {
+			t.Errorf("refresh issued %s", req.Method)
+		}
+		_, _ = io.WriteString(w, remote)
+	}))
+	t.Cleanup(server.Close)
+	r := &PluginConfigurationResource{client: client.NewClient(server.URL, "test")}
+	s := schemaOf(r)
+	state := tfsdk.State{Schema: s}
+	// An older state, or a controller's reconstructed state, has no ownership
+	// record yet. Seed it from the configured subset on the first read.
+	if d := state.Set(ctx, &PluginConfigurationResourceModel{
+		ID: types.StringValue("plugin"), PluginID: types.StringValue("plugin"),
+		Configuration: jsontypes.NewNormalizedValue(`{"section":{"owned":1},"atomic":false}`),
+	}); d.HasError() {
+		t.Fatal(d)
+	}
+	for _, tc := range []struct{ remote, want string }{
+		{remote, `{"atomic":false,"section":{"owned":1}}`},
+		{`{}`, `{}`},
+		{`{}`, `{}`},
+		{`{"section":false,"atomic":{"extra":1}}`, `{"atomic":{"extra":1},"section":false}`},
+		{`{"section":null,"atomic":[]}`, `{"atomic":[],"section":null}`},
+		{`{"section":{"owned":2,"runtime":true},"atomic":{"different":2}}`, `{"atomic":{"different":2},"section":{"owned":2}}`},
+	} {
+		remote = tc.remote
+		resp := resource.ReadResponse{State: state}
+		r.Read(ctx, resource.ReadRequest{State: state}, &resp)
+		if resp.Diagnostics.HasError() {
+			t.Fatal(resp.Diagnostics)
+		}
+		var data PluginConfigurationResourceModel
+		if d := resp.State.Get(ctx, &data); d.HasError() {
+			t.Fatal(d)
+		}
+		if data.Configuration.ValueString() != tc.want {
+			t.Fatalf("read %s: got %s; want %s", remote, data.Configuration.ValueString(), tc.want)
+		}
+		if data.ConfigurationKeys.ValueString() != `{"atomic":null,"section":{"owned":null}}` {
+			t.Fatalf("ownership changed: %s", data.ConfigurationKeys.ValueString())
+		}
+		state = resp.State
 	}
 }
