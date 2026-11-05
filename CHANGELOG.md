@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- BREAKING: `jellyfin_plugin_configuration` now merges declared object fields with the current server configuration, preserving undeclared fields. Removing a field releases ownership without resetting it. Arrays are replaced whole; explicit null sets a value rather than deleting a key. Configuration must be a JSON object and is sensitive (values still reside in Terraform state). Computed `configuration_keys` retains ownership across missing fields and type changes, including for controllers that do not preserve Terraform private state.
+
+## [0.9.0] - 2026-11-04
+
+### Changed
+
+- Supports only Jellyfin 12.4, with JellyfinSecurity plugin 2.6.5.1 (versions tested in CI). Use an earlier provider release for an earlier Jellyfin.
+- Supports JellyfinSecurity plugin 2.6.5.1.
+
+### Added
+
+- `jellyfin_security_plugin_configuration`: `welcome_email_enabled` and `app_password_refused_clients` (JellyfinSecurity 2.6.5).
+- `jellyfin_security_plugin_configuration`: write-only secrets that never reach plan or state, each sent on create and whenever its `*_wo_version` changes (Terraform 1.11+, JellyfinSecurity 2.6.5+):
+  - `smtp_password_wo`, `ntfy_token_wo`, `ntfy_password_wo`, `gotify_app_token_wo`, `telegram_bot_token_wo`, `webhook_secret_wo` and `webhook_ed25519_private_key_wo`, each with its `*_wo_version`;
+  - `webhook_headers_wo`, a map keyed by header name, with `webhook_headers_wo_version`;
+  - `oidc_client_secrets_wo`, a map of OIDC client secrets keyed by provider `id`, with `oidc_client_secrets_wo_version`.
+
+### Deprecated
+
+- `jellyfin_security_plugin_configuration`: the plain secret attributes (`smtp_password`, `ntfy_token`, `ntfy_password`, `gotify_app_token`, `telegram_bot_token`, `webhook_secret`, `webhook_ed25519_private_key`), `webhook_headers` and `oidc_providers[*].client_secret`. Use the `*_wo` attributes instead. They will be removed in the next major release.
+
+### Fixed
+
+- `jellyfin_security_plugin_configuration`: "Provider produced inconsistent result after apply" with JellyfinSecurity 2.6.5, which serves saved secrets as `(saved)`. A configured secret now keeps its configured value in state, an unconfigured one holds `(saved)`, and the plugin keeps any secret the plan leaves unset.
+
+## [0.8.0] - 2026-10-27
+
+### Changed
+
+- Supports only Jellyfin 12.4, with JellyfinSecurity plugin 2.6.4.1 (versions tested in CI). Use an earlier provider release for an earlier Jellyfin.
+
+## [0.7.0] - 2026-10-23
+
 ### Added
 
 - `jellyfin_api_key`: import by app name, as long as no other key has that name; the access token still works. `jellyfin-import` writes the app name, and the access token only for keys that share a name, so `imports.tf` usually holds no secrets.
@@ -14,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Supports only Jellyfin 12.3, with JellyfinSecurity plugin 2.6.4.1 (versions tested in CI). Use an earlier provider release for an earlier Jellyfin.
 - `jellyfin_api_key`: `app_name` is optional and defaults to `Terraform`.
 - `jellyfin_plugin`: `version` is a minimum while Jellyfin's automatic plugin updates are on, that is while its `PluginUpdates` task (*Update Plugins*) has at least one trigger. The next apply no longer reinstalls the pinned version over a plugin the task upgraded. Changing `version` to a value the installed version satisfies only updates state, and creating the resource adopts a newer installed version. With no triggers, `version` stays exact. The `autoUpdate` flag in a plugin's `meta.json` is not read.
 - `jellyfin_plugin`: imported plugins, including every one `jellyfin-import` generates, and pinned plugins in state from 0.6.0 or earlier plan no change after the task upgrades them. In a few cases one plan after an upgrade changes `version` once, in place and only in state, and never downgrades the plugin:

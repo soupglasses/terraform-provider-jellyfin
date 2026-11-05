@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   tag:
+    # The fork is consumed by immutable commits; upstream release numbering
+    # and registry publication belong to the upstream repository.
+    if: github.repository == 'ThePhaseless/terraform-provider-jellyfin'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.bump.outputs.tag }}
