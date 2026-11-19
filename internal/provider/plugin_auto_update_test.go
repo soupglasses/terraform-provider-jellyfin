@@ -254,6 +254,34 @@ func TestUnitPluginReadKeepsAPinnedVersionAnUpdateExceeds(t *testing.T) {
 	}
 }
 
+// Jellyfin lists LDAP Authentication as LDAP-Auth once it has loaded it. A
+// name read from that listing would no longer match the configuration, and
+// the plan would replace the plugin.
+func TestUnitPluginReadKeepsThePackageNameOfALoadedPlugin(t *testing.T) {
+	t.Parallel()
+
+	loaded := bookshelfAt("12.0.0.0", "Active")
+	loaded.Name = "Bookshelf-Loaded"
+	r := newFakePluginResource(t, &fakePluginServer{plugins: []client.InstalledPlugin{loaded}})
+
+	resp := readPlugin(t, r, installedBookshelf("12.0.0.0", "12.0.0.0"))
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read: %v", resp.Diagnostics)
+	}
+	if got := pluginModel(t, resp.State).Name.ValueString(); got != "Bookshelf" {
+		t.Errorf("read name %s, want the package name Bookshelf", got)
+	}
+
+	imported := PluginResourceModel{ID: types.StringValue(bookshelfID), Name: types.StringValue(bookshelfID)}
+	resp = readPlugin(t, r, imported)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read of an import: %v", resp.Diagnostics)
+	}
+	if got := pluginModel(t, resp.State).Name.ValueString(); got != loaded.Name {
+		t.Errorf("imported name %s, want the listed name %s", got, loaded.Name)
+	}
+}
+
 func TestUnitPluginReadFailsWhenTheScheduleCannotBeRead(t *testing.T) {
 	t.Parallel()
 

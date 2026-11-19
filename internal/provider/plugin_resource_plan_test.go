@@ -184,6 +184,14 @@ func TestUnitPluginRestartIsPlannedWhileAVersionWaitsForOne(t *testing.T) {
 			if install := plansInstall(t, resp); install != c.install {
 				t.Errorf("planned change = %t, want %t", install, c.install)
 			}
+			// Upjet applies only changes to known values.
+			var status types.String
+			if diags := resp.Plan.GetAttribute(t.Context(), path.Root("status"), &status); diags.HasError() {
+				t.Fatalf("planned status: %v", diags.Errors())
+			}
+			if known := !status.IsUnknown() && status.ValueString() != c.status; known != c.install {
+				t.Errorf("planned status = %s, want a known change %t", status, c.install)
+			}
 		})
 	}
 }
