@@ -456,6 +456,9 @@ func (r *PluginResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 	}
 	if plan.Restart.ValueBool() && state.Status.ValueString() == pluginStatusRestart {
 		resp.Diagnostics.Append(planPluginChange(ctx, &resp.Plan)...)
+		// Upjet ignores planned values that are unknown, so only a known
+		// status lets it see the restart as a change to apply.
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("status"), types.StringValue(pluginStatusActive))...)
 	}
 
 	// Only an installed version newer than the required one is kept with
