@@ -14,7 +14,6 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -410,8 +409,8 @@ func TestUnitPluginReadCountsAVersionInStateAsPinnedUntilAPlanStoresIt(t *testin
 			t.Errorf("refreshed version %s, installed_version %s; want 12.0.0.0 kept and 13.0.0.0", refreshed.Version, refreshed.InstalledVersion)
 		}
 		var planned PluginResourceModel
-		if d := plan.Plan.Get(t.Context(), &planned); d.HasError() || len(plan.Diagnostics) > 0 || !planned.Version.Equal(refreshed.Version) || len(plan.RequiresReplace) > 0 {
-			t.Errorf("plan %v, version %s, replace %v; want no change", plan.Diagnostics, planned.Version, plan.RequiresReplace)
+		if d := plan.Plan.Get(t.Context(), &planned); d.HasError() || len(plan.Diagnostics) > 0 || !planned.Version.Equal(refreshed.Version) || len(plan.RequiresReplace) > 0 || plansInstall(t, plan) {
+			t.Errorf("plan %v, version %s, replace %v, install %t; want no change", plan.Diagnostics, planned.Version, plan.RequiresReplace, plansInstall(t, plan))
 		}
 	})
 	t.Run("version omitted", func(t *testing.T) {
@@ -426,8 +425,8 @@ func TestUnitPluginReadCountsAVersionInStateAsPinnedUntilAPlanStoresIt(t *testin
 		planned := refreshed
 		planned.Version = refreshed.InstalledVersion
 		plan := planPlugin(t, r, &refreshed, &planned, types.StringNull(), privateKeys(t, read.Private)...)
-		if len(plan.Diagnostics) > 0 || len(plan.RequiresReplace) > 0 {
-			t.Fatalf("plan %v, replace %v; want an update in place", plan.Diagnostics, plan.RequiresReplace)
+		if len(plan.Diagnostics) > 0 || len(plan.RequiresReplace) > 0 || plansInstall(t, plan) {
+			t.Fatalf("plan %v, replace %v, install %t; want an update of state only", plan.Diagnostics, plan.RequiresReplace, plansInstall(t, plan))
 		}
 		if got := privateValue(t, plan.Private, privateVersionPinned); got != "false" {
 			t.Errorf("planned version_pinned %s, want false", got)
@@ -456,7 +455,7 @@ func TestUnitPluginVersionChangeWhileUpdatesAreOn(t *testing.T) {
 		state    PluginResourceModel
 		version  string
 		private  []privateKey
-		replace  bool
+		install  bool
 	}{
 		{"an older version", nil, installed, "12.0.0.0", []privateKey{autoUpdateKey(autoUpdateOn)}, false},
 		{"a newer version", nil, installed, "14.0.0.0", []privateKey{autoUpdateKey(autoUpdateOn)}, true},
@@ -479,8 +478,8 @@ func TestUnitPluginVersionChangeWhileUpdatesAreOn(t *testing.T) {
 			if resp.Diagnostics.HasError() {
 				t.Fatalf("ModifyPlan: %v", resp.Diagnostics)
 			}
-			if got := resp.RequiresReplace.Contains(path.Root("version")); got != tc.replace {
-				t.Errorf("replace = %t, want %t", got, tc.replace)
+			if got := plansInstall(t, resp); got != tc.install {
+				t.Errorf("install = %t, want %t", got, tc.install)
 			}
 		})
 	}
@@ -533,8 +532,8 @@ func TestUnitPluginPlanFailsWhenTheScheduleIsPlannedAfterThePlugin(t *testing.T)
 
 	r := newFakePluginResource(t, &fakePluginServer{plugins: []client.InstalledPlugin{bookshelfAt("13.0.0.0", "Active")}, pluginUpdateTriggers: updatesOn})
 	refreshed, plan := refreshAndPlan(t, r, installedBookshelf("12.0.0.0", "12.0.0.0"), types.StringValue("12.0.0.0"), pinnedKey(true))
-	if len(plan.Diagnostics) > 0 || plan.RequiresReplace.Contains(path.Root("version")) || refreshed.Version.ValueString() != "12.0.0.0" {
-		t.Fatalf("plugin plan: %v, replace %v, refreshed version %s; want the pin kept without diagnostics", plan.Diagnostics, plan.RequiresReplace, refreshed.Version)
+	if len(plan.Diagnostics) > 0 || plansInstall(t, plan) || refreshed.Version.ValueString() != "12.0.0.0" {
+		t.Fatalf("plugin plan: %v, refreshed version %s; want the pin kept without diagnostics", plan.Diagnostics, refreshed.Version)
 	}
 
 	task := planPluginUpdates(t, r.client, updateTriggersOff(t))
@@ -580,8 +579,8 @@ func TestUnitPluginPlanFollowsTheSchedulePlannedFirst(t *testing.T) {
 		t.Fatalf("task diagnostics %v, want none", task.Diagnostics)
 	}
 	_, plan := refreshAndPlan(t, r, installedBookshelf("12.0.0.0", "12.0.0.0"), types.StringValue("12.0.0.0"), pinnedKey(true))
-	if len(plan.Diagnostics) > 0 || !plan.RequiresReplace.Contains(path.Root("version")) {
-		t.Errorf("plugin plan: %v, replace %v; want the pin reinstalled without diagnostics", plan.Diagnostics, plan.RequiresReplace)
+	if len(plan.Diagnostics) > 0 || !plansInstall(t, plan) {
+		t.Errorf("plugin plan: %v; want the pin reinstalled without diagnostics", plan.Diagnostics)
 	}
 }
 
@@ -725,7 +724,7 @@ func TestUnitPluginPlanWarnsWithoutARefresh(t *testing.T) {
 		if detail := plan.Diagnostics[0].Detail(); !strings.Contains(detail, "used Jellyfin's automatic plugin updates as on, as they were when Terraform last refreshed or created it, although a jellyfin_scheduled_task in this configuration turns them off") {
 			t.Errorf("plugin warning detail %q, want the schedule of the last refresh and the planned one", detail)
 		}
-		if plan.RequiresReplace.Contains(path.Root("version")) {
+		if plansInstall(t, plan) {
 			t.Error("plan replaces the plugin, want it planned with updates on as last refreshed")
 		}
 	})
@@ -786,7 +785,7 @@ func TestUnitPluginPlanWarnsWithoutARefresh(t *testing.T) {
 			if detail := plan.Diagnostics[0].Detail(); !strings.Contains(detail, want) {
 				t.Errorf("plugin warning detail %q, want it to contain %q", detail, want)
 			}
-			if plan.RequiresReplace.Contains(path.Root("version")) {
+			if plansInstall(t, plan) {
 				t.Error("plan replaces the plugin, want it planned with updates on as stored")
 			}
 		})
@@ -835,8 +834,8 @@ func TestUnitPluginPlanWarnsWhileTheScheduleIsUnknown(t *testing.T) {
 
 		r := newFakePluginResource(t, &fakePluginServer{plugins: []client.InstalledPlugin{bookshelfAt("13.0.0.0", "Active")}})
 		_, plan := refreshAndPlan(t, r, state, pin, pinnedKey(true))
-		if len(plan.Diagnostics) > 0 || !plan.RequiresReplace.Contains(path.Root("version")) {
-			t.Fatalf("plugin plan: %v, replace %v; want the pin reinstalled without diagnostics", plan.Diagnostics, plan.RequiresReplace)
+		if len(plan.Diagnostics) > 0 || !plansInstall(t, plan) {
+			t.Fatalf("plugin plan: %v; want the pin reinstalled without diagnostics", plan.Diagnostics)
 		}
 		task := planPluginUpdates(t, r.client, updateTriggersUnknown(t))
 		if got, want := described(task.Diagnostics), []string{"warning " + unknown + " at triggers"}; !slices.Equal(got, want) {

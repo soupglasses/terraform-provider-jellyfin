@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `jellyfin_plugin`: optional `restart`, which restarts Jellyfin to load the installed version.
+
 ### Changed
 
+- `jellyfin_plugin`: changing `version` updates the plugin in place instead of replacing the resource.
+- `jellyfin_plugin`: adopts an installed plugin by its GUID, not only by its name.
 - BREAKING: `jellyfin_plugin_configuration` now merges declared object fields with the current server configuration, preserving undeclared fields. Removing a field releases ownership without resetting it. Arrays are replaced whole; explicit null sets a value rather than deleting a key. Configuration must be a JSON object and is sensitive (values still reside in Terraform state). Computed `configuration_keys` retains ownership across missing fields and type changes, including for controllers that do not preserve Terraform private state.
 
 ## [0.9.0] - 2026-11-04

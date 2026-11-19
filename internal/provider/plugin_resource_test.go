@@ -207,9 +207,9 @@ resource "jellyfin_plugin" "test" {
 	})
 }
 
-// Under create_before_destroy the replacement installs the new version before
-// the old object is destroyed, and both share the plugin's GUID.
-func TestAccPluginResourceCreateBeforeDestroyKeepsNewVersion(t *testing.T) {
+// A version change installs the new version in place and uninstalls the
+// others, keeping the plugin's GUID.
+func TestAccPluginResourceVersionChangeInstallsInPlace(t *testing.T) {
 	pkg := testAccFindUninstalledPackage(t, stableRepoURL, 2)
 	older, newer := pkg.Versions[1].Version, pkg.Versions[0].Version
 	config := func(version string) string {
@@ -218,10 +218,6 @@ resource "jellyfin_plugin" "test" {
   name           = %q
   version        = %q
   repository_url = %q
-
-  lifecycle {
-    create_before_destroy = true
-  }
 }
 `, pkg.Name, version, stableRepoURL)
 	}
@@ -239,11 +235,60 @@ resource "jellyfin_plugin" "test" {
 				Config: config(newer),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
-						plancheck.ExpectResourceAction("jellyfin_plugin.test", plancheck.ResourceActionCreateBeforeDestroy),
+						plancheck.ExpectResourceAction("jellyfin_plugin.test", plancheck.ResourceActionUpdate),
 					},
 				},
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("jellyfin_plugin.test", "installed_version", newer),
+					testAccCheckPluginListedOnlyAt(t, pkg.Name, newer),
+				),
+			},
+		},
+	})
+}
+
+// With restart set, the resource restarts Jellyfin to load what it installs,
+// at create and at a version change.
+func TestAccPluginResourceRestartLoadsInstalledVersion(t *testing.T) {
+	testAccRestartPreCheck(t, "tests that restart the server")
+	pkg := testAccFindUninstalledPackage(t, stableRepoURL, 2)
+	older, newer := pkg.Versions[1].Version, pkg.Versions[0].Version
+	taskID := testAccRestorePluginUpdateTriggers(t)
+	config := func(version string) string {
+		return fmt.Sprintf(`
+resource "jellyfin_scheduled_task" "plugin_updates" {
+  task_id  = %q
+  triggers = []
+}
+
+resource "jellyfin_plugin" "test" {
+  name           = %q
+  version        = %q
+  repository_url = %q
+  restart        = true
+
+  depends_on = [jellyfin_scheduled_task.plugin_updates]
+}
+`, taskID, pkg.Name, version, stableRepoURL)
+	}
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy:             testAccCheckPluginNotListed(t, pkg.Name),
+		Steps: []resource.TestStep{
+			{
+				Config: config(older),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("jellyfin_plugin.test", "installed_version", older),
+					resource.TestCheckResourceAttr("jellyfin_plugin.test", "status", pluginStatusActive),
+				),
+			},
+			{
+				Config: config(newer),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("jellyfin_plugin.test", "installed_version", newer),
+					resource.TestCheckResourceAttr("jellyfin_plugin.test", "status", pluginStatusActive),
 					testAccCheckPluginListedOnlyAt(t, pkg.Name, newer),
 				),
 			},
