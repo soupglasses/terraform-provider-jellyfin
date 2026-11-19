@@ -77,6 +77,17 @@ func planPluginFor(t *testing.T, r *PluginResource, state, plan, config *PluginR
 	return resp
 }
 
+// plansInstall reports whether resp plans installed_version unknown, which
+// has Update install the configured version or restart Jellyfin to load it.
+func plansInstall(t *testing.T, resp *resource.ModifyPlanResponse) bool {
+	t.Helper()
+	var installed types.String
+	if diags := resp.Plan.GetAttribute(t.Context(), path.Root("installed_version"), &installed); diags.HasError() {
+		t.Fatalf("planned installed_version: %v", diags.Errors())
+	}
+	return installed.IsUnknown()
+}
+
 func bookshelfPackage(versions ...string) []client.PackageInfo {
 	pkg := client.PackageInfo{Name: "Bookshelf"}
 	for _, v := range versions {
@@ -104,7 +115,7 @@ func installedBookshelf(version, installedVersion string) PluginResourceModel {
 	return m
 }
 
-func TestUnitPluginVersionChangeReplacesUnlessItNamesInstalledVersion(t *testing.T) {
+func TestUnitPluginVersionChangeInstallsUnlessItNamesInstalledVersion(t *testing.T) {
 	installed := installedBookshelf("13.0.0.0", "13.0.0.0")
 	fromKeyword := installedBookshelf("latest", "13.0.0.0")
 	beforeInstalledVersion := installed
@@ -115,7 +126,7 @@ func TestUnitPluginVersionChangeReplacesUnlessItNamesInstalledVersion(t *testing
 		packages []client.PackageInfo
 		state    PluginResourceModel
 		version  types.String
-		replace  bool
+		install  bool
 		fails    bool
 	}{
 		{"keyword resolving to the installed version", bookshelfPackage("13.0.0.0", "12.0.0.0"), installed, types.StringValue("latest"), false, false},
@@ -138,11 +149,77 @@ func TestUnitPluginVersionChangeReplacesUnlessItNamesInstalledVersion(t *testing
 			if resp.Diagnostics.HasError() != c.fails {
 				t.Fatalf("errors = %v, want failure %t", resp.Diagnostics.Errors(), c.fails)
 			}
-			replace := resp.RequiresReplace.Contains(path.Root("version"))
-			if replace != c.replace {
-				t.Errorf("replace = %t, want %t", replace, c.replace)
+			if resp.RequiresReplace.Contains(path.Root("version")) {
+				t.Error("plan replaces the plugin")
+			}
+			if install := plansInstall(t, resp); install != c.install {
+				t.Errorf("install = %t, want %t", install, c.install)
 			}
 		})
+	}
+}
+
+func TestUnitPluginRestartIsPlannedWhileAVersionWaitsForOne(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  string
+		restart bool
+		install bool
+	}{
+		{"waiting with restart set", pluginStatusRestart, true, true},
+		{"waiting without restart set", pluginStatusRestart, false, false},
+		{"loaded with restart set", pluginStatusActive, true, false},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state := installedBookshelf("13.0.0.0", "13.0.0.0")
+			state.Status = types.StringValue(c.status)
+			state.Restart = types.BoolValue(c.restart)
+			resp := modifyPluginPlan(t, newFakePluginResource(t, &fakePluginServer{}), state, state)
+
+			if resp.Diagnostics.HasError() {
+				t.Fatalf("ModifyPlan: %v", resp.Diagnostics.Errors())
+			}
+			if install := plansInstall(t, resp); install != c.install {
+				t.Errorf("planned change = %t, want %t", install, c.install)
+			}
+		})
+	}
+}
+
+// A version change installs the new version in place and uninstalls the
+// others, keeping the plugin's ID.
+func TestUnitPluginUpdateInstallsVersionInPlace(t *testing.T) {
+	fake := &fakePluginServer{
+		installID: bookshelfID,
+		plugins:   []client.InstalledPlugin{{ID: bookshelfID, Name: "Bookshelf", Version: "13.0.0.0", Status: pluginStatusActive, CanUninstall: true}},
+	}
+	r := newFakePluginResource(t, fake)
+	ctx := t.Context()
+
+	prior := installedBookshelf("13.0.0.0", "13.0.0.0")
+	planned := prior
+	planned.Version = types.StringValue("14.0.0.0")
+	planned.InstalledVersion = types.StringUnknown()
+	planned.Status = types.StringUnknown()
+
+	state := pluginResourceState(t, prior)
+	req := resource.UpdateRequest{Plan: pluginResourcePlan(t, planned), State: state}
+	initPrivate(&req.Private)
+	setPrivate(t, req.Private, autoUpdateKey(autoUpdateOff))
+	resp := &resource.UpdateResponse{State: state}
+	r.Update(ctx, req, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Update: %v", resp.Diagnostics.Errors())
+	}
+
+	got := pluginModel(t, resp.State)
+	if got.ID.ValueString() != bookshelfID || got.InstalledVersion.ValueString() != "14.0.0.0" || got.Status.ValueString() != pluginStatusRestart {
+		t.Errorf("state id %s, installed_version %s, status %s; want %s, 14.0.0.0, Restart", got.ID, got.InstalledVersion, got.Status, bookshelfID)
+	}
+	if listed := fake.listed(); len(listed) != 1 || listed[0].Version != "14.0.0.0" {
+		t.Errorf("listed %v, want only 14.0.0.0", listed)
 	}
 }
 

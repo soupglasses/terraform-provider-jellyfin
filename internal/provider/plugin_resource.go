@@ -20,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 
@@ -36,6 +37,9 @@ const (
 const (
 	// pluginStatusActive is the status of a version Jellyfin has loaded.
 	pluginStatusActive = "Active"
+	// pluginStatusRestart is the status of an installed version Jellyfin
+	// loads at the next restart.
+	pluginStatusRestart = "Restart"
 	// pluginStatusDeleted is the status of a version Jellyfin could not remove
 	// from disk and deletes at the next restart instead.
 	pluginStatusDeleted = "Deleted"
@@ -85,6 +89,7 @@ type PluginResourceModel struct {
 	InstalledVersion types.String `tfsdk:"installed_version"`
 	Status           types.String `tfsdk:"status"`
 	RepositoryURL    types.String `tfsdk:"repository_url"`
+	Restart          types.Bool   `tfsdk:"restart"`
 }
 
 func (r *PluginResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -104,7 +109,9 @@ func (r *PluginResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"Without it, a plan that turns updates on or off can fail and ask for it. " +
 			"Keep the task and the plugins on one provider configuration. " +
 			"A plan that cannot know the schedule, such as with triggers unknown until apply or -refresh=false, warns, and the next plan corrects it.\n\n" +
-			"Replacing the resource also replaces the resources that take its id, such as jellyfin_plugin_configuration, because the id is unknown until the plugin is installed again. They then write their configuration again, which Jellyfin accepts only once a restart has loaded the reinstalled plugin, so put a jellyfin_restart between them, as the jellyfin_security_plugin_configuration example does.",
+			"A changed version is installed in place: the resource keeps its id, installs the version and uninstalls the others. " +
+			"Jellyfin loads a newly installed version, and accepts configuration for it, only after a restart. Set restart to have the resource restart Jellyfin, or put a jellyfin_restart between the plugin and its jellyfin_plugin_configuration, as the jellyfin_security_plugin_configuration example does. " +
+			"Changing name or repository_url replaces the resource, which also replaces the resources that take its id.",
 		MarkdownDescription: "Installs a plugin on the Jellyfin server. The server may require a restart after installation.\n\n" +
 			"Jellyfin's *Update Plugins* scheduled task (key `PluginUpdates`) upgrades every plugin to the newest compatible version its repositories offer, at startup and every 24 hours by default. " +
 			"While that task has at least one trigger, automatic updates are on and `version` is a minimum: any installed version at least as new satisfies it, and creating the resource adopts a newer installed version instead of installing an older one. " +
@@ -116,7 +123,9 @@ func (r *PluginResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 			"Without it, a plan that turns updates on or off can fail and ask for it. " +
 			"Keep the task and the plugins on one provider configuration. " +
 			"A plan that cannot know the schedule, such as with triggers unknown until apply or `-refresh=false`, warns, and the next plan corrects it.\n\n" +
-			"Replacing the resource also replaces the resources that take its `id`, such as `jellyfin_plugin_configuration`, because the `id` is unknown until the plugin is installed again. They then write their configuration again, which Jellyfin accepts only once a restart has loaded the reinstalled plugin, so put a `jellyfin_restart` between them, as the `jellyfin_security_plugin_configuration` example does.",
+			"A changed `version` is installed in place: the resource keeps its `id`, installs the version and uninstalls the others. " +
+			"Jellyfin loads a newly installed version, and accepts configuration for it, only after a restart. Set `restart` to have the resource restart Jellyfin, or put a `jellyfin_restart` between the plugin and its `jellyfin_plugin_configuration`, as the `jellyfin_security_plugin_configuration` example does. " +
+			"Changing `name` or `repository_url` replaces the resource, which also replaces the resources that take its `id`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description:         "The plugin ID assigned by Jellyfin after installation.",
@@ -136,8 +145,8 @@ func (r *PluginResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 				},
 			},
 			"version": schema.StringAttribute{
-				Description:         "The version to install, as the repository lists it (e.g. 13.0.0.0), or latest (the newest offered) or supported (the Jellyfin Security release this provider was tested against). A keyword is resolved only at install or when set, stays in state as written, and accepts any version installed later. Omitted, it installs as supported for Jellyfin Security and latest otherwise, then tracks installed_version, as it also does after a keyword is removed. A version is a minimum while automatic plugin updates are on, else exact; see the resource description. Changing it reinstalls the plugin, replacing the resource, unless the installed version already satisfies the new value.",
-				MarkdownDescription: "The version to install, as the repository lists it (e.g. `13.0.0.0`), or `latest` (the newest offered) or `supported` (the Jellyfin Security release this provider was tested against). A keyword is resolved only at install or when set, stays in state as written, and accepts any version installed later. Omitted, it installs as `supported` for Jellyfin Security and `latest` otherwise, then tracks `installed_version`, as it also does after a keyword is removed. A version is a minimum while automatic plugin updates are on, else exact; see the resource description. Changing it reinstalls the plugin, replacing the resource, unless the installed version already satisfies the new value.",
+				Description:         "The version to install, as the repository lists it (e.g. 13.0.0.0), or latest (the newest offered) or supported (the Jellyfin Security release this provider was tested against). A keyword is resolved only at install or when set, stays in state as written, and accepts any version installed later. Omitted, it installs as supported for Jellyfin Security and latest otherwise, then tracks installed_version, as it also does after a keyword is removed. A version is a minimum while automatic plugin updates are on, else exact; see the resource description. Changing it installs the new version in place and uninstalls the others, unless the installed version already satisfies the new value.",
+				MarkdownDescription: "The version to install, as the repository lists it (e.g. `13.0.0.0`), or `latest` (the newest offered) or `supported` (the Jellyfin Security release this provider was tested against). A keyword is resolved only at install or when set, stays in state as written, and accepts any version installed later. Omitted, it installs as `supported` for Jellyfin Security and `latest` otherwise, then tracks `installed_version`, as it also does after a keyword is removed. A version is a minimum while automatic plugin updates are on, else exact; see the resource description. Changing it installs the new version in place and uninstalls the others, unless the installed version already satisfies the new value.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -175,6 +184,11 @@ func (r *PluginResource) Schema(_ context.Context, _ resource.SchemaRequest, res
 					stringplanmodifier.UseStateForUnknown(),
 					stringplanmodifier.RequiresReplaceIfConfigured(),
 				},
+			},
+			"restart": schema.BoolAttribute{
+				Description:         "Whether to restart Jellyfin when the version this resource installed waits for a restart to load, and wait until Jellyfin lists it as Active. A refresh that finds it still waiting plans the restart. Defaults to false.",
+				MarkdownDescription: "Whether to restart Jellyfin when the version this resource installed waits for a restart to load, and wait until Jellyfin lists it as `Active`. A refresh that finds it still waiting plans the restart. Defaults to `false`.",
+				Optional:            true,
 			},
 		},
 	}
@@ -226,7 +240,16 @@ func (r *PluginResource) Create(ctx context.Context, req resource.CreateRequest,
 		scheduleReadError(&resp.Diagnostics, err)
 		return
 	}
-	installed, adopted := installedToKeep(plugins, data.Name.ValueString(), resolvedVersion, schedule)
+	pkg, err := r.availablePackage(ctx, data.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to check available packages", err.Error())
+		return
+	}
+	var id string
+	if pkg != nil {
+		id = normalizeGUID(pkg.GUID)
+	}
+	installed, adopted := installedToKeep(plugins, data.Name.ValueString(), id, resolvedVersion, schedule)
 
 	if installed == nil {
 		if err := r.client.InstallPlugin(ctx, data.Name.ValueString(), resolvedVersion, data.RepositoryURL.ValueString()); err != nil {
@@ -237,6 +260,12 @@ func (r *PluginResource) Create(ctx context.Context, req resource.CreateRequest,
 		installed, err = r.waitForPlugin(ctx, data.Name.ValueString(), resolvedVersion, pluginInstallTimeout)
 		if err != nil {
 			resp.Diagnostics.AddError("Plugin install did not complete", err.Error())
+			return
+		}
+	}
+	if data.Restart.ValueBool() && installed.Status == pluginStatusRestart {
+		if installed, err = r.restartToLoad(ctx, installed.ID, installed.Version); err != nil {
+			resp.Diagnostics.AddError("Plugin did not load after restarting Jellyfin", err.Error())
 			return
 		}
 	}
@@ -272,17 +301,19 @@ func (r *PluginResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 }
 
-// installedToKeep returns the GET /Plugins entry of name that Create keeps
-// instead of installing version, or nil to install it: the entry at version
-// if Jellyfin can load it, else, while schedule has automatic plugin updates
-// on, the newest newer entry Jellyfin can load, which adopted reports. An
-// entry Jellyfin cannot load is never kept, so the install replaces it.
-func installedToKeep(plugins []client.InstalledPlugin, name, version string, schedule autoUpdate) (keep *client.InstalledPlugin, adopted bool) {
+// installedToKeep returns the GET /Plugins entry of name, or of the plugin
+// with the dash-free GUID id, that Create keeps instead of installing
+// version, or nil to install it: the entry at version if Jellyfin can load
+// it, else, while schedule has automatic plugin updates on, the newest newer
+// entry Jellyfin can load, which adopted reports. An entry Jellyfin cannot
+// load is never kept, so the install replaces it. Jellyfin lists a loaded
+// plugin by the name in its meta.json, which can differ from the package name.
+func installedToKeep(plugins []client.InstalledPlugin, name, id, version string, schedule autoUpdate) (keep *client.InstalledPlugin, adopted bool) {
 	var newest *client.InstalledPlugin
 	for i := range plugins {
 		p := &plugins[i]
 		switch {
-		case p.Name != name || !usablePluginStatus(p.Status):
+		case (p.Name != name && (id == "" || normalizeGUID(p.ID) != id)) || !usablePluginStatus(p.Status):
 		case samePluginVersion(p.Version, version):
 			return p, false
 		case release.Compare(p.Version, version) > 0 && (newest == nil || release.Compare(p.Version, newest.Version) > 0):
@@ -420,8 +451,11 @@ func (r *PluginResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 			keeps = keeps && samePluginVersion(installed, required)
 		}
 		if !keeps {
-			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("version"))
+			resp.Diagnostics.Append(planPluginChange(ctx, &resp.Plan)...)
 		}
+	}
+	if plan.Restart.ValueBool() && state.Status.ValueString() == pluginStatusRestart {
+		resp.Diagnostics.Append(planPluginChange(ctx, &resp.Plan)...)
 	}
 
 	// Only an installed version newer than the required one is kept with
@@ -437,6 +471,14 @@ func (r *PluginResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 			name: plan.Name.ValueString(), used: schedule, recorded: recorded, sensitive: sensitive, installed: installed, required: required,
 		})...)
 	}
+}
+
+// planPluginChange plans the installed version and its status unknown, which
+// has Update install the configured version or restart Jellyfin to load it.
+func planPluginChange(ctx context.Context, plan *tfsdk.Plan) diag.Diagnostics {
+	diags := plan.SetAttribute(ctx, path.Root("installed_version"), types.StringUnknown())
+	diags.Append(plan.SetAttribute(ctx, path.Root("status"), types.StringUnknown())...)
+	return diags
 }
 
 // heldVersion returns "" when state records none. State written before
@@ -478,9 +520,11 @@ func (r *PluginResource) requiredVersion(ctx context.Context, name string, plann
 	return resolved, true
 }
 
-// Update only runs for a change ModifyPlan found the installed version to
-// satisfy, so Jellyfin has nothing to change. The planned private state
-// already holds whether the configuration sets version.
+// Update changes Jellyfin only when ModifyPlan planned installed_version
+// unknown: for a version the installed one does not satisfy, which it
+// installs in place of the others, or for a restart that restart asks for.
+// The planned private state already holds whether the configuration sets
+// version.
 func (r *PluginResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state PluginResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -492,17 +536,119 @@ func (r *PluginResource) Update(ctx context.Context, req resource.UpdateRequest,
 	if plan.ID.IsUnknown() {
 		plan.ID = state.ID
 	}
+	if plan.RepositoryURL.IsUnknown() {
+		plan.RepositoryURL = state.RepositoryURL
+	}
 	if plan.InstalledVersion.IsUnknown() {
-		plan.InstalledVersion = state.InstalledVersion
+		schedule, _, diags := storedAutoUpdate(ctx, req.Private)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		installed, err := r.change(ctx, plan, state, schedule.minimum(), &resp.Diagnostics)
+		if err != nil {
+			resp.Diagnostics.AddError("Failed to update plugin", err.Error())
+			return
+		}
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.InstalledVersion = types.StringValue(installed.Version)
+		plan.Status = types.StringValue(installed.Status)
 	}
 	if plan.Status.IsUnknown() {
 		plan.Status = state.Status
 	}
-	if plan.RepositoryURL.IsUnknown() {
-		plan.RepositoryURL = state.RepositoryURL
-	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// change installs the version plan requires unless the installed one
+// satisfies it, exactly or, when minimum, by being at least as new, and
+// uninstalls every other version. It then restarts Jellyfin when plan sets
+// restart and the version waits for one, and returns the entry Jellyfin
+// lists for the version.
+func (r *PluginResource) change(ctx context.Context, plan, state PluginResourceModel, minimum bool, diags *diag.Diagnostics) (*client.InstalledPlugin, error) {
+	name, id := plan.Name.ValueString(), plan.ID.ValueString()
+	version := heldVersion(state)
+	required, known := r.requiredVersion(ctx, name, plan.Version, state.Version, diags)
+	if diags.HasError() {
+		return nil, nil
+	}
+	if known && !versionDescribes(types.StringValue(required), version, minimum) {
+		version = required
+	}
+
+	listed, err := r.listedPlugins(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	installed := atVersion(listed, version)
+	if installed == nil {
+		if err := r.client.InstallPlugin(ctx, name, version, plan.RepositoryURL.ValueString()); err != nil {
+			return nil, errors.New(err.Error() + notOfferedHint(err, name, version))
+		}
+		if installed, err = r.waitForPlugin(ctx, name, version, pluginInstallTimeout); err != nil {
+			return nil, err
+		}
+		if detail := unloadablePluginDetail(*installed); detail != "" {
+			return nil, errors.New(detail)
+		}
+		r.recordCreated(*installed)
+		if _, err := r.uninstall(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+
+	if plan.Restart.ValueBool() && installed.Status == pluginStatusRestart {
+		return r.restartToLoad(ctx, id, version)
+	}
+	return installed, nil
+}
+
+// restartToLoad restarts Jellyfin to load version of the plugin with the
+// given id, unless a restart for another plugin already loaded it, and
+// returns the entry Jellyfin then lists as Active for it. One restart loads
+// every installed version that waits for one.
+func (r *PluginResource) restartToLoad(ctx context.Context, id, version string) (*client.InstalledPlugin, error) {
+	defer client.HoldPluginChanges()()
+	active := func() (*client.InstalledPlugin, error) {
+		listed, err := r.listedPlugins(ctx, id)
+		if p := atVersion(listed, version); err == nil && p != nil && p.Status == pluginStatusActive {
+			return p, nil
+		}
+		return nil, err
+	}
+	if p, err := active(); p != nil || err != nil {
+		return p, err
+	}
+	if err := r.client.RestartServer(ctx); err != nil {
+		return nil, err
+	}
+	if err := awaitRestart(ctx, r.client, defaultRestartTimeoutSeconds*time.Second, startupStatusDelay); err != nil {
+		return nil, err
+	}
+	if p, err := active(); p != nil || err != nil {
+		return p, err
+	}
+	return nil, fmt.Errorf("plugin %s is not listed as Active at version %s after the restart", id, version)
+}
+
+// atVersion returns the entry of listed at version Jellyfin can load,
+// preferring the one it has loaded, as Jellyfin can list a version twice.
+func atVersion(listed []client.InstalledPlugin, version string) *client.InstalledPlugin {
+	var found *client.InstalledPlugin
+	for i := range listed {
+		p := &listed[i]
+		switch {
+		case !samePluginVersion(p.Version, version) || !usablePluginStatus(p.Status):
+		case p.Status == pluginStatusActive:
+			return p
+		case found == nil:
+			found = p
+		}
+	}
+	return found
 }
 
 func (r *PluginResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -599,8 +745,8 @@ func pluginVersions(plugins []client.InstalledPlugin) []string {
 }
 
 // selectInstalledPlugin returns the GET /Plugins entry for id (either GUID spelling) or name:
-// the one at version, preferring one Jellyfin can load, as a reinstall next to one it
-// cannot is, else the newest, skipping versions pending deletion.
+// the one at version, preferring the one Jellyfin has loaded, then one it can load, as a
+// reinstall next to one it cannot is, else the newest, skipping versions pending deletion.
 func selectInstalledPlugin(plugins []client.InstalledPlugin, id, name, version string) (client.InstalledPlugin, bool) {
 	var selected, atVersion client.InstalledPlugin
 	found, foundAtVersion := false, false
@@ -608,10 +754,10 @@ func selectInstalledPlugin(plugins []client.InstalledPlugin, id, name, version s
 		switch {
 		case p.Status == pluginStatusDeleted || (normalizeGUID(p.ID) != normalizeGUID(id) && p.Name != name):
 		case version != "" && samePluginVersion(p.Version, version):
-			if usablePluginStatus(p.Status) {
+			if p.Status == pluginStatusActive {
 				return p, true
 			}
-			if !foundAtVersion {
+			if !foundAtVersion || (usablePluginStatus(p.Status) && !usablePluginStatus(atVersion.Status)) {
 				atVersion, foundAtVersion = p, true
 			}
 		case !found || release.Compare(p.Version, selected.Version) > 0:

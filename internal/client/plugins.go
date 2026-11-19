@@ -16,6 +16,14 @@ import (
 // until restart.
 var pluginChangeMu sync.Mutex
 
+// HoldPluginChanges blocks plugin installs and uninstalls through every
+// client until the returned function is called, so that a restart does not
+// cut one off.
+func HoldPluginChanges() (release func()) {
+	pluginChangeMu.Lock()
+	return pluginChangeMu.Unlock
+}
+
 // PluginRepository represents a plugin repository.
 type PluginRepository struct {
 	Name    string `json:"Name"`
@@ -35,6 +43,7 @@ type InstalledPlugin struct {
 // PackageInfo represents information about an available package.
 type PackageInfo struct {
 	Name     string        `json:"name"`
+	GUID     string        `json:"guid"`
 	Versions []VersionInfo `json:"versions"`
 }
 

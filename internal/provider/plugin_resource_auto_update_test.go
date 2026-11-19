@@ -88,7 +88,7 @@ func TestAccPluginResourceTurningUpdatesOffNeedsDependsOn(t *testing.T) {
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
 						plancheck.ExpectResourceAction("jellyfin_scheduled_task.plugin_updates", plancheck.ResourceActionUpdate),
-						plancheck.ExpectResourceAction("jellyfin_plugin.test", plancheck.ResourceActionReplace),
+						plancheck.ExpectResourceAction("jellyfin_plugin.test", plancheck.ResourceActionUpdate),
 					},
 				},
 				Check: resource.ComposeAggregateTestCheckFunc(
