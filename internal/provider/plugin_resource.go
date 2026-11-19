@@ -368,8 +368,13 @@ func (r *PluginResource) Read(ctx context.Context, req resource.ReadRequest, res
 	pinned, diags := storedVersionPinned(ctx, req.Private, data.Version)
 	resp.Diagnostics.Append(diags...)
 
+	// Jellyfin lists a loaded plugin under the name its own metadata gives,
+	// which can differ from the package name, so only an import, which
+	// knows no package name, takes the listed one.
+	if data.Name.Equal(data.ID) {
+		data.Name = types.StringValue(p.Name)
+	}
 	data.ID = types.StringValue(p.ID)
-	data.Name = types.StringValue(p.Name)
 	data.InstalledVersion = types.StringValue(p.Version)
 	data.Status = types.StringValue(p.Status)
 	// Read cannot see the configuration, so a version it only holds because
